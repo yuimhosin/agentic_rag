@@ -116,7 +116,14 @@ def main():
                     try:
                         stats = _run_sync()
                         st.session_state.sync_done = True
-                        st.success(f"同步完成：更新 {stats.get('updated', 0)} 篇")
+                        msg = f"同步完成：更新 {stats.get('updated', 0)} 篇"
+                        if stats.get("failed", 0) > 0:
+                            msg += f"，失败 {stats['failed']} 篇"
+                            st.warning(msg)
+                            for err in stats.get("errors", []):
+                                st.error(err)
+                        else:
+                            st.success(msg)
                     except Exception as e:
                         st.error(f"同步失败：{e}")
                         st.session_state.sync_done = True
@@ -125,7 +132,14 @@ def main():
                 with st.spinner("同步中..."):
                     try:
                         stats = _run_sync()
-                        st.success(f"同步完成：更新 {stats.get('updated', 0)} 篇")
+                        msg = f"同步完成：更新 {stats.get('updated', 0)} 篇"
+                        if stats.get("failed", 0) > 0:
+                            msg += f"，失败 {stats['failed']} 篇"
+                            st.warning(msg)
+                            for err in stats.get("errors", []):
+                                st.error(err)
+                        else:
+                            st.success(msg)
                     except Exception as e:
                         st.error(f"同步失败：{e}")
                 st.rerun()

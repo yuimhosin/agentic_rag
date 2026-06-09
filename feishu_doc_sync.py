@@ -37,10 +37,10 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
     """
     同步所有配置的文档。
     on_update(doc_id, content, title) 在文档有更新时被调用。
-    返回统计：{"synced": n, "updated": n, "failed": n}
+    返回统计：{"synced": n, "updated": n, "failed": n, "errors": [str, ...]}
     """
     meta = _load_meta()
-    stats = {"synced": 0, "updated": 0, "failed": 0}
+    stats = {"synced": 0, "updated": 0, "failed": 0, "errors": []}
 
     for item in FEISHU_DOC_IDS:
         if not item or len(item) != 2:
@@ -54,6 +54,16 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
             content, revision = get_bitable_raw_content(app_token, table_id)
             if content is None:
                 stats["failed"] += 1
+                err_msg = f"bitable:{app_token[:12]}... 拉取失败"
+                if not table_id:
+                    from feishu_api_client import list_bitable_tables
+                    tables = list_bitable_tables(app_token)
+                    if not tables:
+                        err_msg += "（无法获取表格列表，请检查应用权限或链接是否正确）"
+                    else:
+                        available = ", ".join([t.get("name", t.get("table_id", "")) for t in tables[:3]])
+                        err_msg += f"（可用表格：{available}）"
+                stats["errors"].append(err_msg)
                 continue
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             old = meta.get(meta_key, {})
@@ -74,6 +84,7 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
                 docs = list_wiki_space_docs(doc_id)
                 if not docs:
                     stats["failed"] += 1
+                    stats["errors"].append(f"wiki:{doc_id[:20]}... 无法获取文档列表，请检查知识库权限")
                     continue
                 for node_token, obj_token, title in docs:
                     meta_key = f"wiki:{doc_id}:{node_token}"
@@ -111,6 +122,7 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
             content, revision = get_doc_raw_content(doc_id, source=source)
             if content is None:
                 stats["failed"] += 1
+                stats["errors"].append(f"{source}:{doc_id[:20]}... 拉取失败，请检查文档权限或链接")
                 continue
 
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
