@@ -3,17 +3,13 @@
 import os
 from pathlib import Path
 
-# 加载 .env
-try:
-    from dotenv import load_dotenv
-    _env = Path(__file__).resolve().parent / ".env"
-    if _env.exists():
-        load_dotenv(_env)
-except ImportError:
-    pass
+# 优先级（低→高）：Streamlit secrets → .streamlit/secrets.toml → .env
+# Streamlit 的 st.secrets 内部会无条件调用 os.environ[k]=v，因此必须在其之后
+# 用 override=True 重新加载 .env，确保本地 .env 始终拥有最高优先级。
 
-# Streamlit：将 secrets 注入为环境变量（补充 .env 中缺失或空的值）
+# Step 1: Streamlit secrets（最低优先级，仅在 Streamlit Cloud 无 .env 时生效）
 def _inject_secrets_from_dict(d: dict):
+    """将 secrets dict 注入 os.environ（仅补全空缺，不覆盖已有值）"""
     for k, v in d.items():
         if isinstance(v, str) and (k not in os.environ or not (os.environ.get(k) or "").strip()):
             os.environ[k] = v
@@ -23,27 +19,37 @@ def _inject_secrets_from_dict(d: dict):
 try:
     import streamlit as st
     if hasattr(st, "secrets") and st.secrets:
+        # 注意：st.secrets 访问时 Streamlit 内部会调用 _maybe_set_environment_variable
+        # 无条件覆盖 os.environ，因此此处只做记录，后续 .env 会以 override=True 覆盖回来
         _inject_secrets_from_dict(dict(st.secrets))
 except Exception:
     pass
 
-# 本地运行：若 feishu-rag 无 .streamlit，尝试加载父目录的 secrets.toml
-if not (os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")):
-    import re
-    for _secrets_path in [
-        Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
-        Path(__file__).resolve().parent.parent / ".streamlit" / "secrets.toml",
-    ]:
-        if _secrets_path.exists():
-            try:
-                text = _secrets_path.read_text(encoding="utf-8")
-                for m in re.finditer(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"', text, re.M):
-                    k, v = m.group(1), m.group(2)
-                    if k not in os.environ or not (os.environ.get(k) or "").strip():
-                        os.environ[k] = v
-            except Exception:
-                pass
-            break
+# Step 2: 本地运行时，手动解析 secrets.toml（优先于 Streamlit secrets）
+import re as _re
+for _secrets_path in [
+    Path(__file__).resolve().parent / ".streamlit" / "secrets.toml",
+    Path(__file__).resolve().parent.parent / ".streamlit" / "secrets.toml",
+]:
+    if _secrets_path.exists():
+        try:
+            _text = _secrets_path.read_text(encoding="utf-8")
+            for _m in _re.finditer(r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"', _text, _re.M):
+                _k, _v = _m.group(1), _m.group(2)
+                if _k not in os.environ or not (os.environ.get(_k) or "").strip():
+                    os.environ[_k] = _v
+        except Exception:
+            pass
+        break
+
+# Step 3: .env（最高优先级）——override=True 确保本地 .env 始终覆盖 Streamlit secrets
+try:
+    from dotenv import load_dotenv
+    _env = Path(__file__).resolve().parent / ".env"
+    if _env.exists():
+        load_dotenv(_env, override=True)
+except ImportError:
+    pass
 
 # 飞书应用
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")

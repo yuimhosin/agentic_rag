@@ -5,9 +5,12 @@
 import os
 import time
 import json
+import logging
 import urllib.request
 import urllib.error
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # 配置
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
@@ -48,8 +51,10 @@ def get_tenant_access_token() -> Optional[str]:
                 _token_cache["token"] = token
                 _token_cache["expires_at"] = now + expire
                 return token
-    except Exception:
-        pass
+            else:
+                logger.error("获取 tenant_access_token 失败：code=%s msg=%s", data.get("code"), data.get("msg"))
+    except Exception as e:
+        logger.error("获取 tenant_access_token 异常：%s", e)
     return None
 
 
@@ -93,10 +98,9 @@ def list_wiki_space_docs(space_id: str) -> list:
     if not token:
         return []
     result = []
-    page_token = None
 
-    def _fetch_nodes(parent_token: str = None):
-        nonlocal page_token
+    def _fetch_nodes(parent_token: str = None, page_token: str = None) -> tuple:
+        """返回 (items, next_page_token)，修复递归时 page_token 共享污染的 bug"""
         url = f"{FEISHU_API_BASE}/wiki/v2/spaces/{space_id}/nodes"
         params = []
         if parent_token:
@@ -117,33 +121,32 @@ def list_wiki_space_docs(space_id: str) -> list:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode())
                 if data.get("code") != 0:
-                    return []
+                    logger.warning("list_wiki_space_docs 失败：code=%s msg=%s", data.get("code"), data.get("msg"))
+                    return [], None
                 d = data.get("data", {})
-                items = d.get("items", [])
-                page_token = d.get("page_token")
-                return items
-        except Exception:
-            return []
+                return d.get("items", []), d.get("page_token")
+        except Exception as e:
+            logger.warning("list_wiki_space_docs 请求异常：%s", e)
+            return [], None
 
-    # 先获取根节点下的子节点
-    nodes = _fetch_nodes()
-    while nodes:
-        for node in nodes:
-            node_token = node.get("node_token", "")
-            obj_token = node.get("obj_token", "")
-            obj_type = node.get("obj_type", "")
-            title = node.get("title", "")
-            if obj_type in ("doc", "docx") and obj_token:
-                result.append((node_token, obj_token, title))
-            elif obj_type == "folder" and node_token:
-                # 递归获取文件夹下的文档
-                sub = _fetch_nodes(parent_token=node_token)
-                nodes.extend(sub)
-        if page_token:
-            nodes = _fetch_nodes()
-        else:
-            break
+    def _collect_nodes(parent_token: str = None):
+        """递归收集节点，每次调用使用独立的 page_token，避免父子作用域污染"""
+        pt = None
+        while True:
+            items, pt = _fetch_nodes(parent_token=parent_token, page_token=pt)
+            for node in items:
+                node_token = node.get("node_token", "")
+                obj_token = node.get("obj_token", "")
+                obj_type = node.get("obj_type", "")
+                title = node.get("title", "")
+                if obj_type in ("doc", "docx") and obj_token:
+                    result.append((node_token, obj_token, title))
+                elif obj_type == "folder" and node_token:
+                    _collect_nodes(parent_token=node_token)
+            if not pt:
+                break
 
+    _collect_nodes()
     return result
 
 
@@ -199,6 +202,7 @@ def get_bitable_raw_content(app_token: str, table_id: str) -> tuple[Optional[str
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
                 if data.get("code") != 0:
+                    logger.error("get_bitable_raw_content 失败：code=%s msg=%s", data.get("code"), data.get("msg"))
                     return None, None
                 d = data.get("data", {})
                 items = d.get("items", [])
@@ -216,7 +220,15 @@ def get_bitable_raw_content(app_token: str, table_id: str) -> tuple[Optional[str
                 page_token = d.get("page_token")
                 if not d.get("has_more", False) or not page_token:
                     break
-        except Exception:
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode()
+            except Exception:
+                body = ""
+            logger.error("get_bitable_raw_content HTTP %s：%s", e.code, body[:300])
+            return None, None
+        except Exception as e:
+            logger.error("get_bitable_raw_content 异常：%s", e)
             return None, None
 
     content = "\n\n---\n\n".join(all_texts) if all_texts else ""
@@ -272,6 +284,7 @@ def get_bitable_records(app_token: str, table_id: str) -> list[dict]:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
                 if data.get("code") != 0:
+                    logger.error("get_bitable_records 失败：code=%s msg=%s", data.get("code"), data.get("msg"))
                     return []
                 d = data.get("data", {})
                 items = d.get("items", [])
@@ -286,7 +299,15 @@ def get_bitable_records(app_token: str, table_id: str) -> list[dict]:
                 page_token = d.get("page_token")
                 if not d.get("has_more", False) or not page_token:
                     break
-        except Exception:
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode()
+            except Exception:
+                body = ""
+            logger.error("get_bitable_records HTTP %s：%s", e.code, body[:300])
+            return []
+        except Exception as e:
+            logger.error("get_bitable_records 异常：%s", e)
             return []
 
     return all_records
@@ -339,11 +360,18 @@ def get_doc_raw_content(doc_id: str, source: str = "doc") -> tuple[Optional[str]
                 content = data.get("data", {}).get("content", "")
                 revision_id = data.get("data", {}).get("revision_id") or data.get("data", {}).get("document_revision_id")
                 return content or "", str(revision_id) if revision_id else ""
+            else:
+                logger.error("get_doc_raw_content API 失败：code=%s msg=%s doc_id=%s", data.get("code"), data.get("msg"), doc_id)
+                return None, None
     except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None, None
-        raise
-    except Exception:
+        try:
+            body = e.read().decode()
+        except Exception:
+            body = ""
+        logger.error("get_doc_raw_content HTTP %s doc_id=%s：%s", e.code, doc_id, body[:300])
+        return None, None
+    except Exception as e:
+        logger.error("get_doc_raw_content 异常 doc_id=%s：%s", doc_id, e)
         return None, None
 
 

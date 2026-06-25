@@ -4,10 +4,13 @@
 """
 import json
 import hashlib
+import logging
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 from config import FEISHU_DOC_IDS, FEISHU_DOC_URLS, VECTOR_DB_PATH, SYNC_INTERVAL
 from feishu_api_client import get_doc_raw_content, get_doc_info, list_wiki_space_docs, get_bitable_raw_content
@@ -54,6 +57,7 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
             content, revision = get_bitable_raw_content(app_token, table_id)
             if content is None:
                 stats["failed"] += 1
+                logger.warning("同步 bitable 失败：app_token=%s table_id=%s（可能缺少 bitable:app:readonly 权限）", app_token, table_id)
                 continue
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             old = meta.get(meta_key, {})
@@ -74,6 +78,7 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
                 docs = list_wiki_space_docs(doc_id)
                 if not docs:
                     stats["failed"] += 1
+                    logger.warning("同步 wiki 失败：doc_id=%s（节点拉取失败且无子节点，可能缺少 wiki:node:read 或 docx:document:readonly 权限）", doc_id)
                     continue
                 for node_token, obj_token, title in docs:
                     meta_key = f"wiki:{doc_id}:{node_token}"
@@ -111,6 +116,7 @@ def sync_documents(on_update: Optional[Callable[[str, str, str], None]] = None) 
             content, revision = get_doc_raw_content(doc_id, source=source)
             if content is None:
                 stats["failed"] += 1
+                logger.warning("同步文档失败：source=%s doc_id=%s（可能缺少 docx:document:readonly 权限）", source, doc_id)
                 continue
 
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -176,8 +182,8 @@ def run_sync_loop(on_update: Optional[Callable[[str, str, str], None]] = None, i
         while True:
             try:
                 sync_documents(on_update=on_update)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error("同步循环异常：%s", e)
             time.sleep(iv)
 
     t = threading.Thread(target=_loop, daemon=True)

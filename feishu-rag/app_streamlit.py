@@ -10,7 +10,14 @@ _root = Path(__file__).resolve().parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+import logging
 import streamlit as st
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 # set_page_config 必须是第一个 Streamlit 命令，需在 config 之前
 st.set_page_config(
@@ -74,7 +81,11 @@ def _run_sync() -> dict:
     from feishu_doc_sync import sync_documents
     from rag_engine import RAGEngine
     from clean_timestamps import clean_content, clean_all_doc_contents
+    from config import FEISHU_APP_ID
     rag = RAGEngine.get_cached()
+
+    if not FEISHU_APP_ID:
+        raise ValueError("FEISHU_APP_ID 未配置，请检查 .env 或 Secrets")
 
     def on_update(doc_id: str, content: str, title: str):
         rag.add_document(doc_id, clean_content(content), title)
@@ -84,6 +95,16 @@ def _run_sync() -> dict:
     n = clean_all_doc_contents()
     if n > 0:
         rag.invalidate_index()
+
+    if stats.get("failed", 0) > 0 and stats.get("updated", 0) == 0:
+        raise RuntimeError(
+            f"同步全部失败（failed={stats['failed']}）。\n"
+            "常见原因：\n"
+            "  1. 飞书应用缺少权限：需在开发者后台添加 bitable:app:readonly 和 docx:document:readonly 权限\n"
+            "  2. 应用未被文档所在空间授权\n"
+            "  3. FEISHU_APP_ID/SECRET 配置错误\n"
+            f"当前使用的 APP_ID 前缀：{FEISHU_APP_ID[:12]}..."
+        )
     return stats
 
 
