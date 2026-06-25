@@ -173,6 +173,44 @@ def subscribe_drive_file(file_token: str, file_type: str = "bitable") -> bool:
         return False
 
 
+def list_bitable_tables(app_token: str) -> list:
+    """
+    获取多维表格应用下的所有表格列表。
+    返回 [{"table_id": "xxx", "name": "xxx"}, ...]
+    """
+    token = get_tenant_access_token()
+    if not token:
+        return []
+    url = f"{FEISHU_API_BASE}/bitable/v1/apps/{app_token}/tables"
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("code") == 0:
+                return data.get("data", {}).get("items", [])
+            logger.warning("list_bitable_tables 失败：code=%s msg=%s", data.get("code"), data.get("msg"))
+    except Exception as e:
+        logger.warning("list_bitable_tables 异常：%s", e)
+    return []
+
+
+def _auto_table_id(app_token: str, table_id: str) -> str:
+    """若 table_id 为空，自动获取该 base 下的第一个表格 ID"""
+    if table_id:
+        return table_id
+    tables = list_bitable_tables(app_token)
+    if tables:
+        auto_id = tables[0].get("table_id", "")
+        if auto_id:
+            logger.info("自动获取到 table_id：%s（base: %s）", auto_id, app_token[:16])
+        return auto_id
+    return ""
+
+
 def get_bitable_raw_content(app_token: str, table_id: str) -> tuple[Optional[str], Optional[str]]:
     """
     获取多维表格内容，转为纯文本。
@@ -181,6 +219,7 @@ def get_bitable_raw_content(app_token: str, table_id: str) -> tuple[Optional[str
     token = get_tenant_access_token()
     if not token:
         return None, None
+    table_id = _auto_table_id(app_token, table_id)
     if not table_id:
         return None, None
 
@@ -263,6 +302,7 @@ def get_bitable_records(app_token: str, table_id: str) -> list[dict]:
     token = get_tenant_access_token()
     if not token:
         return []
+    table_id = _auto_table_id(app_token, table_id)
     if not table_id:
         return []
 
